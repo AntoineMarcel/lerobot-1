@@ -62,7 +62,7 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainRLServerPipelineConfig
 from lerobot.policies.factory import make_policy
 from lerobot.policies.sac.modeling_sac import SACPolicy
-from lerobot.policies.sac.processor_sac import make_sac_batch_normalizer
+from lerobot.policies.sac.processor_sac import make_sac_pre_post_processors
 from lerobot.rl.process import ProcessSignalHandler
 from lerobot.rl.queue import get_last_item_from_queue
 from lerobot.robots import so_follower  # noqa: F401
@@ -259,10 +259,9 @@ def act_with_policy(
     policy = policy.eval()
     assert isinstance(policy, nn.Module)
 
-    batch_normalizer = make_sac_batch_normalizer(
+    preprocessor, postprocessor = make_sac_pre_post_processors(
         config=cfg.policy,
         dataset_stats=cfg.policy.dataset_stats,
-        device=device,
     )
 
     obs, info = online_env.reset()
@@ -295,8 +294,9 @@ def act_with_policy(
 
         # Time policy inference and check if it meets FPS requirement
         with policy_timer:
-            normalized_observation = batch_normalizer.normalize_observation(observation)
+            normalized_observation = preprocessor.process_observation(observation)
             action = policy.select_action(batch=normalized_observation)
+            action = postprocessor.process_action(action)
         policy_fps = policy_timer.fps_last
 
         log_policy_frequency_issue(policy_fps=policy_fps, cfg=cfg, interaction_step=interaction_step)
