@@ -76,8 +76,22 @@ def main(cfg: SolariaServerConfig):
             f"solaria_host attend --robot.type=bi_so_follower, reçu type={cfg.robot.type!r}."
         )
 
-    logging.info("Connecting follower arms on Pi")
-    robot.connect()
+    logging.info("Connecting follower arms on Pi (calibration JSON applied without prompts)")
+    robot.connect(calibrate=False)
+
+    for arm in (robot.left_arm, robot.right_arm):
+        if not arm.is_calibrated:
+            if arm.calibration:
+                logging.info("Writing calibration from file for arm id=%s", arm.id)
+                with arm.bus.torque_disabled():
+                    arm.bus.write_calibration(arm.calibration)
+                if not arm.is_calibrated:
+                    logging.warning("Motors may still not match calibration file for id=%s", arm.id)
+            else:
+                raise RuntimeError(
+                    f"Missing calibration JSON for {arm.id}: {arm.calibration_fpath}. "
+                    "Create the file or run a one-off `robot.connect()` with calibration on a TTY."
+                )
 
     logging.info("Starting ZMQ host (cmd PULL %s, obs PUSH %s)", cfg.host.port_zmq_cmd, cfg.host.port_zmq_observations)
     host = SolariaHost(cfg.host)
