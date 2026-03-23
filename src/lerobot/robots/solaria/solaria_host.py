@@ -26,6 +26,8 @@ import draccus
 import numpy as np
 import zmq
 
+from lerobot.cameras.utils import make_cameras_from_configs
+
 from ..bi_so_follower import BiSOFollower
 from ..utils import make_robot_from_config
 from .config_solaria import SolariaHostConfig, SolariaServerConfig
@@ -96,49 +98,60 @@ def main(cfg: SolariaServerConfig):
     logging.info("Starting ZMQ host (cmd PULL %s, obs PUSH %s)", cfg.host.port_zmq_cmd, cfg.host.port_zmq_observations)
     host = SolariaHost(cfg.host)
 
-    last_cmd_time = time.time()
-    watchdog_fired = False
-    logging.info("Waiting for commands...")
+    host_cameras = make_cameras_from_configs(cfg.host.cameras)
     try:
-        start = time.perf_counter()
-        duration = 0.0
-        while duration < host.connection_time_s:
-            loop_start_time = time.time()
-            try:
-                msg = host.zmq_cmd_socket.recv_string(zmq.NOBLOCK)
-                data = dict(json.loads(msg))
-                robot.send_action(data)
-                last_cmd_time = time.time()
-                watchdog_fired = False
-            except zmq.Again:
-                pass
-            except Exception as e:
-                logging.error("Command handling failed: %s", e)
+        for cam in host_cameras.values():
+            cam.connect()
+        print(host_cameras)
+        print(cfg.host.cameras)
 
-            now = time.time()
-            if (now - last_cmd_time > host.watchdog_timeout_ms / 1000.0) and not watchdog_fired:
-                logging.warning(
-                    "No command for more than %s ms; arms hold last goal (no base to stop on Solaria).",
-                    host.watchdog_timeout_ms,
-                )
-                watchdog_fired = True
+        last_cmd_time = time.time()
+        watchdog_fired = False
+        logging.info("Waiting for commands...")
+        try:
+            start = time.perf_counter()
+            duration = 0.0
+            while duration < host.connection_time_s:
+                loop_start_time = time.time()
+                try:
+                    msg = host.zmq_cmd_socket.recv_string(zmq.NOBLOCK)
+                    data = dict(json.loads(msg))
+                    robot.send_action(data)
+                    last_cmd_time = time.time()
+                    watchdog_fired = False
+                except zmq.Again:
+                    pass
+                except Exception as e:
+                    logging.error("Command handling failed: %s", e)
 
-            last_observation = robot.get_observation()
-            payload = _observation_to_json_serializable(last_observation)
+                now = time.time()
+                if (now - last_cmd_time > host.watchdog_timeout_ms / 1000.0) and not watchdog_fired:
+                    logging.warning(
+                        "No command for more than %s ms; arms hold last goal (no base to stop on Solaria).",
+                        host.watchdog_timeout_ms,
+                    )
+                    watchdog_fired = True
 
-            try:
-                host.zmq_observation_socket.send_string(json.dumps(payload), flags=zmq.NOBLOCK)
-            except zmq.Again:
-                logging.debug("Dropping observation, no client connected")
+                last_observation = dict(robot.get_observation())
+                for name, cam in host_cameras.items():
+                    last_observation[name] = cam.read_latest()
+                payload = _observation_to_json_serializable(last_observation)
 
-            elapsed = time.time() - loop_start_time
-            time.sleep(max(1.0 / host.max_loop_freq_hz - elapsed, 0.0))
-            duration = time.perf_counter() - start
+                try:
+                    host.zmq_observation_socket.send_string(json.dumps(payload), flags=zmq.NOBLOCK)
+                except zmq.Again:
+                    logging.debug("Dropping observation, no client connected")
 
-    except KeyboardInterrupt:
-        logging.info("Keyboard interrupt, exiting...")
+                elapsed = time.time() - loop_start_time
+                time.sleep(max(1.0 / host.max_loop_freq_hz - elapsed, 0.0))
+                duration = time.perf_counter() - start
+
+        except KeyboardInterrupt:
+            logging.info("Keyboard interrupt, exiting...")
     finally:
         logging.info("Shutting down Solaria host")
+        for cam in host_cameras.values():
+            cam.disconnect()
         robot.disconnect()
         host.disconnect()
 

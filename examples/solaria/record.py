@@ -17,6 +17,9 @@
 Prérequis : `solaria_host` actif sur le Pi (voir teleoperate.py).
 """
 
+import logging
+from pathlib import Path
+
 from lerobot.datasets.feature_utils import hw_to_dataset_features
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.processor import make_default_processors
@@ -29,23 +32,26 @@ from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say
 from lerobot.utils.visualization_utils import init_rerun
 
-NUM_EPISODES = 2
+NUM_EPISODES = 20
 FPS = 30
 EPISODE_TIME_SEC = 30
 RESET_TIME_SEC = 10
-TASK_DESCRIPTION = "My task description"
-HF_REPO_ID = "<hf_username>/<dataset_repo_id>"
-
+TASK_DESCRIPTION = "Put the sock in the box"
+HF_REPO_ID = "SoSolaris/put_the_sock_in_the_box"
+_CALIB_DIR = Path(__file__).resolve().parents[3] / "calibration"
 
 def main():
+    logging.basicConfig(level=logging.INFO)
+
     robot_config = SolariaClientConfig(
         remote_ip="100.123.79.58",
         id="solaria",
     )
     leader_config = BiSOLeaderConfig(
         id="solaria_leader",
-        left_arm_config=SOLeaderConfig(port="/dev/tty.usbmodemLEFT"),
-        right_arm_config=SOLeaderConfig(port="/dev/tty.usbmodemRIGHT"),
+        calibration_dir=_CALIB_DIR,
+        left_arm_config=SOLeaderConfig(port="/dev/tty.usbmodem5B140296141"),
+        right_arm_config=SOLeaderConfig(port="/dev/tty.usbmodem5B141132561"),
     )
 
     robot = SolariaClient(robot_config)
@@ -67,7 +73,20 @@ def main():
     )
 
     robot.connect()
-    leader.connect()
+    leader.connect(calibrate=False)
+    for arm in (leader.left_arm, leader.right_arm):
+        if not arm.is_calibrated:
+            if arm.calibration:
+                logging.info("Writing calibration from file for leader arm id=%s", arm.id)
+                with arm.bus.torque_disabled():
+                    arm.bus.write_calibration(arm.calibration)
+                if not arm.is_calibrated:
+                    logging.warning("Motors may still not match calibration file for id=%s", arm.id)
+            else:
+                raise RuntimeError(
+                    f"Missing calibration JSON for {arm.id}: {arm.calibration_fpath}. "
+                    "Create the file or run a one-off `leader.connect()` with calibration on a TTY."
+                )
 
     listener, events = init_keyboard_listener()
     init_rerun(session_name="solaria_record")

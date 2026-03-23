@@ -81,12 +81,7 @@ class SolariaClient(Robot):
 
     @cached_property
     def _cameras_ft(self) -> dict[str, tuple[int, int, int]]:
-        out: dict[str, tuple[int, int, int]] = {}
-        for name, cfg in self.config.left_cameras.items():
-            out[name] = (cfg.height, cfg.width, 3)
-        for name, cfg in self.config.right_cameras.items():
-            out[name] = (cfg.height, cfg.width, 3)
-        return out
+        return {name: (cfg.height, cfg.width, 3) for name, cfg in self.config.cameras.items()}
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -106,7 +101,8 @@ class SolariaClient(Robot):
 
     @property
     def cameras(self) -> dict:
-        return {}
+        # No local devices; frames come from the Pi over ZMQ. lerobot-record uses len for image-writer threads.
+        return dict.fromkeys(self._cameras_ft)
 
     @check_if_already_connected
     def connect(self) -> None:

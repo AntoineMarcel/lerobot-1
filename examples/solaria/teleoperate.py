@@ -17,6 +17,7 @@ PC (depuis lerobot/, avec PYTHONPATH=src si besoin) :
   python examples/solaria/teleoperate.py
 """
 
+import logging
 import time
 from pathlib import Path
 
@@ -28,11 +29,12 @@ from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 FPS = 30
 
-# Répertoire des JSON `*_left.json` / `*_right.json` (parents[3] = racine du dépôt solaria).
-_CALIB_DIR = Path(__file__).resolve().parents[3] / "calibration"
+_CALIB_DIR = Path("/Users/antoinemarcel/Desktop/test/solaria/calibration/")
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
+
     robot_config = SolariaClientConfig(
         remote_ip="100.123.79.58",
         id="solaria",
@@ -48,7 +50,20 @@ def main():
     leader = BiSOLeader(teleop_config)
 
     robot.connect()
-    leader.connect()
+    leader.connect(calibrate=False)
+    for arm in (leader.left_arm, leader.right_arm):
+        if not arm.is_calibrated:
+            if arm.calibration:
+                logging.info("Writing calibration from file for leader arm id=%s", arm.id)
+                with arm.bus.torque_disabled():
+                    arm.bus.write_calibration(arm.calibration)
+                if not arm.is_calibrated:
+                    logging.warning("Motors may still not match calibration file for id=%s", arm.id)
+            else:
+                raise RuntimeError(
+                    f"Missing calibration JSON for {arm.id}: {arm.calibration_fpath}. "
+                    "Create the file or run a one-off `leader.connect()` with calibration on a TTY."
+                )
 
     init_rerun(session_name="solaria_teleop")
 

@@ -2,6 +2,7 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
+#
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
@@ -12,11 +13,46 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from dataclasses import dataclass, field
-
+from dotenv import load_dotenv
 from lerobot.cameras import CameraConfig
+from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 
 from ..config import RobotConfig
+
+load_dotenv()
+
+
+def solaria_cameras_config() -> dict[str, CameraConfig]:
+    """Three views on the Pi: left, right, up (ZMQ observation keys).
+
+    Set ``CAMERA_LEFT_PORT``, ``CAMERA_RIGHT_PORT``, ``CAMERA_UP_PORT`` to override devices.
+    Defaults: ``/dev/video0``, ``/dev/video2``, ``/dev/video4`` (typical multi-UVC on Linux).
+    """
+    return {
+        "left": OpenCVCameraConfig(
+            index_or_path=os.getenv("CAMERA_LEFT_PORT"),
+            fps=30,
+            width=640,
+            height=480,
+            fourcc="MJPG",
+        ),
+        "right": OpenCVCameraConfig(
+            index_or_path=os.getenv("CAMERA_RIGHT_PORT"),
+            fps=30,
+            width=640,
+            height=480,
+            fourcc="MJPG",
+        ),
+        "up": OpenCVCameraConfig(
+            index_or_path=os.getenv("CAMERA_UP_PORT"),
+            fps=30,
+            width=640,
+            height=480,
+            fourcc="MJPG",
+        ),
+    }
 
 
 @dataclass
@@ -30,6 +66,8 @@ class SolariaHostConfig:
 
     max_loop_freq_hz: int = 30
 
+    cameras: dict[str, CameraConfig] = field(default_factory=solaria_cameras_config)
+
 
 @RobotConfig.register_subclass("solaria_client")
 @dataclass
@@ -41,8 +79,8 @@ class SolariaClientConfig(RobotConfig):
     port_zmq_cmd: int = 5557
     port_zmq_observations: int = 5558
 
-    left_cameras: dict[str, CameraConfig] = field(default_factory=dict)
-    right_cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    # Same keys and resolution as the host; OpenCV paths are not used on the PC.
+    cameras: dict[str, CameraConfig] = field(default_factory=solaria_cameras_config)
 
     polling_timeout_ms: int = 15
     connect_timeout_s: int = 5
