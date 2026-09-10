@@ -20,7 +20,7 @@ from functools import cached_property
 import cv2
 import numpy as np
 
-from lerobot.types import RobotAction, RobotObservation
+from lerobot.lerobot_types import RobotAction, RobotObservation
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 from lerobot.utils.errors import DeviceNotConnectedError
@@ -45,8 +45,12 @@ def _bimanual_motor_keys() -> tuple[str, ...]:
     return tuple(keys)
 
 
+def _single_arm_motor_keys() -> tuple[str, ...]:
+    return tuple(f"{motor}.pos" for motor in _SO_MOTORS)
+
+
 class SolariaClient(Robot):
-    """Remote BiSOFollower over ZMQ; pair with `solaria_host` on the Pi."""
+    """Remote SO follower over ZMQ; pair with `solaria_host` on the Pi."""
 
     config_class = SolariaClientConfig
     name = "solaria_client"
@@ -60,6 +64,9 @@ class SolariaClient(Robot):
         self.remote_ip = config.remote_ip
         self.port_zmq_cmd = config.port_zmq_cmd
         self.port_zmq_observations = config.port_zmq_observations
+        if config.arm_mode not in {"single", "bimanual"}:
+            raise ValueError("SolariaClientConfig.arm_mode must be 'single' or 'bimanual'.")
+        self.arm_mode = config.arm_mode
         self.polling_timeout_ms = config.polling_timeout_ms
         self.connect_timeout_s = config.connect_timeout_s
 
@@ -73,7 +80,8 @@ class SolariaClient(Robot):
 
     @cached_property
     def _state_ft(self) -> dict[str, type]:
-        return dict.fromkeys(_bimanual_motor_keys(), float)
+        keys = _single_arm_motor_keys() if self.arm_mode == "single" else _bimanual_motor_keys()
+        return dict.fromkeys(keys, float)
 
     @cached_property
     def _state_order(self) -> tuple[str, ...]:
@@ -105,7 +113,7 @@ class SolariaClient(Robot):
         return dict.fromkeys(self._cameras_ft)
 
     @check_if_already_connected
-    def connect(self) -> None:
+    def connect(self, calibrate: bool = True) -> None:
         zmq = self._zmq
         self.zmq_context = zmq.Context()
         self.zmq_cmd_socket = self.zmq_context.socket(zmq.PUSH)

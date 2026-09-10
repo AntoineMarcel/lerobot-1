@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Run on the Raspberry Pi: exposes a BiSOFollower over ZMQ (commands in, observations out)."""
+"""Run on the Raspberry Pi: exposes SO follower arms over ZMQ (commands in, observations out)."""
 
 import base64
 import json
@@ -29,6 +29,7 @@ import zmq
 from lerobot.cameras.utils import make_cameras_from_configs
 
 from ..bi_so_follower import BiSOFollower
+from ..so_follower import SOFollower
 from ..utils import make_robot_from_config
 from .config_solaria import SolariaHostConfig, SolariaServerConfig
 
@@ -57,31 +58,37 @@ class SolariaHost:
 def _observation_to_json_serializable(obs: dict) -> dict:
     out = {}
     for key, value in obs.items():
-        if isinstance(value, np.ndarray) and value.ndim >= 2:
-            ret, buffer = cv2.imencode(".jpg", value, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-            if ret:
-                out[key] = base64.b64encode(buffer).decode("utf-8")
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            out[key] = base64.b64encode(bytes(value)).decode("utf-8")
+            continue
+        if isinstance(value, np.ndarray):
+            # 1-D = JPEG déjà compressé (V4L2 MJPG / ffmpeg -c:v copy).
+            if value.ndim == 1 or (value.ndim == 2 and min(value.shape) == 1):
+                out[key] = base64.b64encode(value.tobytes()).decode("utf-8")
+            elif value.ndim >= 2:
+                ret, buffer = cv2.imencode(".jpg", value, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                out[key] = base64.b64encode(buffer).decode("utf-8") if ret else ""
             else:
-                out[key] = ""
-        else:
-            out[key] = float(value) if isinstance(value, (np.floating, np.integer)) else value
+                out[key] = value.tolist()
+            continue
+        out[key] = float(value) if isinstance(value, (np.floating, np.integer)) else value
     return out
 
 
-@draccus.wrap()
-def main(cfg: SolariaServerConfig):
-    logging.basicConfig(level=logging.INFO)
-    logging.info("Configuring Solaria (BiSOFollower host)")
-    robot = make_robot_from_config(cfg.robot)
-    if not isinstance(robot, BiSOFollower):
-        raise ValueError(
-            f"solaria_host attend --robot.type=bi_so_follower, reçu type={cfg.robot.type!r}."
-        )
+def _iter_so_arms(robot) -> tuple[SOFollower, ...]:
+    if isinstance(robot, BiSOFollower):
+        return robot.left_arm, robot.right_arm
+    if isinstance(robot, SOFollower):
+        return (robot,)
+    raise ValueError(
+        "solaria_host attend --robot.type=so101_follower, so100_follower ou bi_so_follower, "
+        f"reçu type={robot.config.type!r}."
+    )
 
-    logging.info("Connecting follower arms on Pi (calibration JSON applied without prompts)")
+
+def _connect_without_interactive_calibration(robot) -> None:
     robot.connect(calibrate=False)
-
-    for arm in (robot.left_arm, robot.right_arm):
+    for arm in _iter_so_arms(robot):
         if not arm.is_calibrated:
             if arm.calibration:
                 logging.info("Writing calibration from file for arm id=%s", arm.id)
@@ -94,6 +101,17 @@ def main(cfg: SolariaServerConfig):
                     f"Missing calibration JSON for {arm.id}: {arm.calibration_fpath}. "
                     "Create the file or run a one-off `robot.connect()` with calibration on a TTY."
                 )
+
+
+@draccus.wrap()
+def main(cfg: SolariaServerConfig):
+    logging.basicConfig(level=logging.INFO)
+    logging.info("Configuring Solaria SO follower host")
+    robot = make_robot_from_config(cfg.robot)
+    _iter_so_arms(robot)
+
+    logging.info("Connecting follower arm(s) on Pi (calibration JSON applied without prompts)")
+    _connect_without_interactive_calibration(robot)
 
     logging.info("Starting ZMQ host (cmd PULL %s, obs PUSH %s)", cfg.host.port_zmq_cmd, cfg.host.port_zmq_observations)
     host = SolariaHost(cfg.host)

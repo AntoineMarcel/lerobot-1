@@ -154,7 +154,8 @@ class FeetechMotorsBus(SerialMotorsBus):
 
     def _handshake(self) -> None:
         self._assert_motors_exist()
-        self._assert_same_firmware()
+        # Solaria: mixed STS firmware 3.9 / 3.10 on the same bus.
+        # self._assert_same_firmware()
 
     def _find_single_motor(self, motor: str, initial_baudrate: int | None = None) -> tuple[int, int]:
         if self.protocol_version == 0:
