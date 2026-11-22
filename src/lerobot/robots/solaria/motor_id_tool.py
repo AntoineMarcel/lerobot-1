@@ -13,7 +13,7 @@ from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.feetech import FeetechMotorsBus
 from lerobot.motors.feetech.feetech import OperatingMode
 
-PORT = "/dev/tty.usbmodem5B141122741"
+PORT = "/dev/tty.usbmodem5B610345331"
 MODEL = "sts3215"
 SPIN_SPEED = 1500
 

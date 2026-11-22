@@ -55,8 +55,9 @@ class SOFollower(Robot):
                 "shoulder_lift": Motor(2, "sts3215", norm_mode_body),
                 "elbow_flex": Motor(3, "sts3215", norm_mode_body),
                 "wrist_flex": Motor(4, "sts3215", norm_mode_body),
-                "wrist_roll": Motor(5, "sts3215", norm_mode_body),
-                "gripper": Motor(6, "sts3215", MotorNormMode.RANGE_0_100),
+                "wrist_yaw": Motor(5, "sts3215", norm_mode_body),
+                "wrist_roll": Motor(6, "sts3215", norm_mode_body),
+                "gripper": Motor(7, "sts3215", MotorNormMode.RANGE_0_100),
             },
             calibration=self.calibration,
         )
@@ -166,11 +167,12 @@ class SOFollower(Robot):
                 self.bus.write("D_Coefficient", motor, self.config.position_d_coefficient)
 
                 if motor == "gripper":
-                    # Soft ceiling so a slam-close cannot crush the fingers.
-                    self.bus.write("Max_Torque_Limit", motor, 150)
-                    self.bus.write("Torque_Limit", motor, 150)
+                    self.bus.write("Max_Torque_Limit", motor, 500)
+                    self.bus.write("Torque_Limit", motor, 500)
                     self.bus.write("Protection_Current", motor, 250)
-                    self.bus.write("Overload_Torque", motor, 25)
+                    # Au-dessus du Torque_Limit (%), sinon la pince retombe à Protective_Torque
+                    # dès qu'elle serre ; la protection en courant reste active.
+                    self.bus.write("Overload_Torque", motor, 60)
                     self.bus.write("Protective_Torque", motor, 20)
                     self.bus.write("Protection_Time", motor, 200)
                     self.bus.write("Over_Current_Protection_Time", motor, 200)
