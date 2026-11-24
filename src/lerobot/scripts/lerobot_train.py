@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from accelerate import Accelerator
 
+import numpy as np
 import torch
 from termcolor import colored
 from torch.optim import Optimizer
@@ -61,6 +62,7 @@ from lerobot.common.wandb_utils import WandBLogger
 from lerobot.configs import JobConfig, parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets import EpisodeAwareSampler, compute_sampler_state
+from lerobot.datasets.compute_stats import compute_relative_action_stats
 from lerobot.datasets.factory import make_train_eval_datasets
 from lerobot.distributed import (
     ParallelDims,
@@ -74,10 +76,16 @@ from lerobot.jobs import submit_to_hf
 from lerobot.optim.factory import make_optimizer_and_scheduler
 from lerobot.policies import PreTrainedPolicy, make_policy, make_pre_post_processors
 from lerobot.policies.factory import ProcessorConfigKwargs
+from lerobot.processor import (
+    AbsoluteActionsProcessorStep,
+    AddBatchDimensionProcessorStep,
+    RelativeActionsProcessorStep,
+    UnnormalizerProcessorStep,
+)
 from lerobot.processor.rename_processor import rename_batch_keys, rename_stats
 from lerobot.rewards import make_reward_pre_post_processors
 from lerobot.utils.collate import lerobot_collate_fn
-from lerobot.utils.constants import PRETRAINED_MODEL_DIR, TRAINING_STATE_DIR
+from lerobot.utils.constants import ACTION, PRETRAINED_MODEL_DIR, TRAINING_STATE_DIR
 from lerobot.utils.import_utils import _peft_available, register_third_party_plugins, require_package
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
@@ -97,6 +105,41 @@ else:
 from .lerobot_eval import eval_policy_all
 
 EMA_STATE_FILENAME = "ema_state.pt"
+
+
+def _ensure_relative_action_steps(preprocessor, postprocessor, policy_cfg) -> None:
+    """Enable relative actions on processors loaded from a checkpoint saved without them (e.g. xvla-base).
+
+    The relative step must run on raw (unnormalized) actions, so it goes right after batching;
+    the absolute step goes right after unnormalization.
+    """
+    exclude = list(getattr(policy_cfg, "relative_exclude_joints", []) or [])
+    names = getattr(policy_cfg, "action_feature_names", None)
+    pre_steps = list(preprocessor.steps)
+    relative_step = next((s for s in pre_steps if isinstance(s, RelativeActionsProcessorStep)), None)
+    if relative_step is None:
+        relative_step = RelativeActionsProcessorStep(enabled=True, exclude_joints=exclude, action_names=names)
+        idx = next((i for i, s in enumerate(pre_steps) if isinstance(s, AddBatchDimensionProcessorStep)), -1)
+        pre_steps.insert(idx + 1, relative_step)
+        preprocessor.steps = pre_steps
+        preprocessor._serialized_state_filenames = None
+        logging.info("Inserted relative_actions_processor into the pretrained preprocessor")
+    else:
+        relative_step.enabled = True
+        relative_step.exclude_joints = exclude
+        relative_step.action_names = names
+
+    post_steps = list(postprocessor.steps)
+    absolute_step = next((s for s in post_steps if isinstance(s, AbsoluteActionsProcessorStep)), None)
+    if absolute_step is None:
+        absolute_step = AbsoluteActionsProcessorStep(enabled=True)
+        idx = next((i for i, s in enumerate(post_steps) if isinstance(s, UnnormalizerProcessorStep)), -1)
+        post_steps.insert(idx + 1, absolute_step)
+        postprocessor.steps = post_steps
+        postprocessor._serialized_state_filenames = None
+        logging.info("Inserted absolute_actions_processor into the pretrained postprocessor")
+    absolute_step.enabled = True
+    absolute_step.relative_step = relative_step
 
 
 @contextmanager
@@ -446,6 +489,26 @@ def train(cfg: TrainPipelineConfig):
     if not is_main_process():
         dataset, eval_dataset = make_train_eval_datasets(cfg)
 
+    relative_cfg = cfg.trainable_config
+    if not cfg.resume and getattr(relative_cfg, "use_relative_actions", False):
+        # Relative actions (action - state) span a much narrower range than absolute ones, so the
+        # action normalizer needs stats computed in relative space with the policy's chunk size.
+        relative_stats = compute_relative_action_stats(
+            hf_dataset=dataset.hf_dataset,
+            features=dataset.meta.features,
+            chunk_size=relative_cfg.chunk_size,
+            exclude_joints=list(getattr(relative_cfg, "relative_exclude_joints", []) or []),
+            num_workers=8,
+        )
+        dataset.meta.stats[ACTION] = relative_stats
+        if is_main_process():
+            logging.info(
+                "Relative action stats (chunk_size=%d): mean=%s std=%s",
+                relative_cfg.chunk_size,
+                np.round(relative_stats["mean"], 2).tolist(),
+                np.round(relative_stats["std"], 2).tolist(),
+            )
+
     # --- policy (weight source decided by the resume rule) -------------------------------------
     # On resume, cfg was parsed FROM the checkpoint's train_config.json, so cfg.checkpoint_format
     # IS the recorded value: DCP-bearing formats skip the safetensors load here and stream the
@@ -533,13 +596,6 @@ def train(cfg: TrainPipelineConfig):
         if not cfg.resume:
             preprocessor_overrides["normalizer_processor"]["stats"] = processor_dataset_stats
             postprocessor_overrides["unnormalizer_processor"]["stats"] = processor_dataset_stats
-        if getattr(active_cfg, "use_relative_actions", False):
-            preprocessor_overrides["relative_actions_processor"] = {
-                "enabled": True,
-                "exclude_joints": getattr(active_cfg, "relative_exclude_joints", []),
-                "action_names": getattr(active_cfg, "action_feature_names", None),
-            }
-            postprocessor_overrides["absolute_actions_processor"] = {"enabled": True}
         processor_kwargs["preprocessor_overrides"] = preprocessor_overrides
         processor_kwargs["postprocessor_overrides"] = postprocessor_overrides
 
@@ -555,6 +611,8 @@ def train(cfg: TrainPipelineConfig):
             pretrained_revision=getattr(cfg.policy, "pretrained_revision", None),
             **processor_kwargs,
         )
+        if processor_pretrained_path is not None and getattr(active_cfg, "use_relative_actions", False):
+            _ensure_relative_action_steps(preprocessor, postprocessor, active_cfg)
 
     # Created BEFORE prepare on the unsharded parameters — accelerate's FSDP2 path requires the
     # model and optimizer in one prepare() call and rebinds the param groups itself.

@@ -23,11 +23,13 @@ import torch
 from lerobot.configs import PipelineFeatureType, PolicyFeature
 from lerobot.lerobot_types import EnvTransition, TransitionKey
 from lerobot.processor import (
+    AbsoluteActionsProcessorStep,
     ObservationProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStep,
     ProcessorStepRegistry,
+    RelativeActionsProcessorStep,
     TokenizerProcessorStep,
     make_default_policy_processor_steps,
     make_policy_processor_pipelines,
@@ -54,11 +56,18 @@ def make_xvla_pre_post_processors(
     Build the LeRobot processor pipelines for XVLA.
     """
 
+    relative_step = RelativeActionsProcessorStep(
+        enabled=config.use_relative_actions,
+        exclude_joints=getattr(config, "relative_exclude_joints", []),
+        action_names=getattr(config, "action_feature_names", None),
+    )
     steps = make_default_policy_processor_steps(config, dataset_stats)
 
+    # raw → relative → normalize → model → unnormalize → absolute
     input_steps = [
         steps.rename_observations,
         steps.add_batch_dim,
+        relative_step,
         TokenizerProcessorStep(
             tokenizer_name=config.tokenizer_name,
             max_length=config.tokenizer_max_length,
@@ -73,6 +82,7 @@ def make_xvla_pre_post_processors(
     ]
     output_steps = [
         steps.unnormalize,
+        AbsoluteActionsProcessorStep(enabled=config.use_relative_actions, relative_step=relative_step),
         steps.to_cpu,
     ]
 
